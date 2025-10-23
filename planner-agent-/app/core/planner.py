@@ -1,9 +1,9 @@
 from typing import Dict, Any, Optional, List
 import json
 from datetime import datetime
-from langchain_openai import AzureChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.schema.output_parser import StrOutputParser
+from langchain_openai import ChatOpenAI  # <-- CHANGED
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.output_parsers import StrOutputParser
 from core.mongodb import MongoDB
 import logging
 import asyncio
@@ -16,28 +16,24 @@ logger = logging.getLogger(__name__)
 
 class PlannerAgent:
     def __init__(self):
-        """Initialize the PlannerAgent with Azure OpenAI configuration."""
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        endpoint = os.getenv("AZURE_API_ENDPOINT")
-        deployment = os.getenv("AZURE_DEPLOYMENT_NAME")
+        """Initialize the PlannerAgent with OpenAI configuration."""
+        # <-- ENTIRE __init__ METHOD UPDATED -->
+        api_key = os.getenv("OPENAI_API_KEY")
 
-        if not all([api_key, endpoint, deployment]):
-            raise ValueError("Missing required Azure OpenAI configuration. Check AZURE_OPENAI_API_KEY, AZURE_API_ENDPOINT, and AZURE_DEPLOYMENT_NAME environment variables.")
+        if not api_key:
+            raise ValueError("Missing required OpenAI configuration. Check OPENAI_API_KEY environment variable.")
 
-        # Configure Azure OpenAI with correct deployment name
+        # Configure OpenAI
         try:
-            self.llm = AzureChatOpenAI(
-                azure_endpoint=endpoint,
-                openai_api_version="2023-05-15",  # Using stable API version
-                deployment_name=deployment,     # Using deployment name from environment
-                openai_api_key=api_key,
+            self.llm = ChatOpenAI(
+                
+                model="gpt-5-mini",  # Or "gpt-4-turbo", "gpt-3.5-turbo-1106", etc.
                 temperature=0.7,
-                max_tokens=2000
             )
         except Exception as e:
-            logger.error(f"Failed to initialize Azure OpenAI: {str(e)}")
-            available_models = "gpt-35-turbo, gpt-35-turbo-16k, gpt-4-32k"  # Common Azure OpenAI deployments
-            raise ValueError(f"Failed to initialize Azure OpenAI. Please check if the deployment '{deployment}' exists. Common deployment names are: {available_models}")
+            logger.error(f"Failed to initialize OpenAI: {str(e)}")
+            raise ValueError(f"Failed to initialize OpenAI. Please check your API key.")
+        
         self.output_parser = StrOutputParser()
 
     async def generate_project_plan(self, project_details: Dict[str, Any]) -> Dict[str, Any]:
@@ -113,7 +109,7 @@ IMPORTANT:
                     retry=tenacity.retry_if_exception_type((RateLimitError, APIError))
                 )
                 async def call_with_retry():
-                    logger.info("Making API call to Azure OpenAI...")
+                    logger.info("Making API call to OpenAI...") # <-- CHANGED
                     result = await chain.ainvoke(context)
                     logger.info(f"Raw response from API: {result}")
                     return result
@@ -157,7 +153,9 @@ IMPORTANT:
 
                 # Store the plan in MongoDB
                 project_id = str(project_details["_id"]) if isinstance(project_details, dict) else str(project_details)
-                await MongoDB.store_project_plan(project_id, plan_json)
+                
+                # <-- CHANGED (Bugfix: Used the class's helper method) -->
+                await self._store_project_plan(project_id, plan_json)
                 
                 logger.info(f"Successfully generated and stored plan for project {project_id}")
                 return plan_json
@@ -179,6 +177,12 @@ IMPORTANT:
     async def refine_project_tasks(self, project_id: str, tasks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Refine high-level tasks into detailed subtasks."""
         try:
+            # --- FIX: Check if the database is connected ---
+            if MongoDB.db is None:
+                logger.error("MongoDB connection not initialized in refine_project_tasks")
+                raise ValueError("Database connection not initialized")
+            # ----------------------------------------------
+
             # First check if project plan exists
             project_plan = await MongoDB.db.project_plans.find_one({"project_id": project_id})
             if not project_plan:
@@ -261,11 +265,8 @@ IMPORTANT:
                 project_plan["updated_at"] = datetime.utcnow()
                 
                 # Store the updated plan
-                await MongoDB.db.project_plans.update_one(
-                    {"project_id": project_id},
-                    {"$set": project_plan},
-                    upsert=True
-                )
+                # <-- CHANGED (Bugfix: Used the class's helper method for upsert) -->
+                await self._store_project_plan(project_id, project_plan)
                 
                 return {
                     "project_id": project_id,
@@ -287,6 +288,12 @@ IMPORTANT:
     async def _store_project_plan(self, project_id: str, plan: Dict[str, Any]) -> None:
         """Store the project plan in MongoDB."""
         try:
+            # --- FIX: Check if the database is connected ---
+            if MongoDB.db is None:
+                logger.error("MongoDB connection not initialized in _store_project_plan")
+                raise ValueError("Database connection not initialized")
+            # ----------------------------------------------
+
             # Add the project_id to the plan document
             plan_with_id = {
                 "project_id": project_id,
@@ -305,6 +312,12 @@ IMPORTANT:
     async def _update_project_plan(self, project_id: str, plan: Dict[str, Any]) -> None:
         """Update the project plan in MongoDB."""
         try:
+            # --- FIX: Check if the database is connected ---
+            if MongoDB.db is None:
+                logger.error("MongoDB connection not initialized in _update_project_plan")
+                raise ValueError("Database connection not initialized")
+            # ----------------------------------------------
+
             # Add the project_id to the plan document
             plan_with_id = {
                 "project_id": project_id,

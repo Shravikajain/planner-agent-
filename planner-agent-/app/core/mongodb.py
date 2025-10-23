@@ -2,12 +2,14 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional, Dict, Any, List
 from pymongo.database import Database
 from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+from pymongo import ReturnDocument
 import logging
 from fastapi import HTTPException
 import asyncio
 from datetime import datetime
 from motor.core import AgnosticDatabase
 from bson import ObjectId
+from bson.errors import InvalidId
 
 logger = logging.getLogger(__name__)
 
@@ -73,13 +75,6 @@ class MongoDB:
             raise HTTPException(status_code=500, detail=error_msg)
 
     @classmethod
-    async def close_mongo_connection(cls):
-        """Close MongoDB connection."""
-        if cls.client is not None:
-            cls.client.close()
-            logger.info("MongoDB connection closed")
-
-    @classmethod
     async def get_project(cls, project_id: str) -> Dict[str, Any]:
         """Get a project by ID."""
         try:
@@ -91,7 +86,7 @@ class MongoDB:
             if project:
                 project["_id"] = str(project["_id"])
                 return project
-            return None
+            return {}
         except Exception as e:
             logger.error(f"Error fetching project {project_id}: {e}")
             raise
@@ -182,9 +177,97 @@ class MongoDB:
             cls.client.close()
             logger.info("MongoDB connection closed")
 
+
     @classmethod
-    async def close_mongo_connection(cls):
-        """Close MongoDB connection."""
-        if cls.client is not None:
-            cls.client.close()
-            logger.info("MongoDB connection closed")
+    def _serialize_project(cls, project: Dict[str, Any]) -> Dict[str, Any]:
+        """Converts ObjectIds to strings for FastAPI response."""
+        if not project:
+            return {}
+        
+        project["_id"] = str(project["_id"])
+        
+        if "user" in project and isinstance(project["user"], ObjectId):
+            project["user"] = str(project["user"])
+        
+        if "tasks" in project:
+            project["tasks"] = [
+                str(task_id) if isinstance(task_id, ObjectId) else task_id
+                for task_id in project["tasks"]
+            ]
+        return project
+    
+    @classmethod
+    async def update_project(cls, project_id: str, update_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update an existing project."""
+        try:
+            if cls.db is None:
+                raise HTTPException(status_code=500, detail="Database connection not initialized")
+
+            obj_id = ObjectId(project_id)
+
+            # Handle tasks conversion if present
+            if "tasks" in update_data and update_data["tasks"]:
+                try:
+                    update_data["tasks"] = [
+                        ObjectId(task_id) if ObjectId.is_valid(task_id) else task_id
+                        for task_id in update_data["tasks"]
+                    ]
+                except:
+                    pass  # Keep original task IDs on failure
+            
+            # Set update timestamp
+            update_data["updated_at"] = datetime.utcnow()
+
+            updated_project = await cls.db.projects.find_one_and_update(
+                {"_id": obj_id},
+                {"$set": update_data},
+                return_document=ReturnDocument.AFTER  # Return the updated document
+            )
+
+            if updated_project:
+                logger.info(f"Successfully updated project: {project_id}")
+                return cls._serialize_project(updated_project)
+            
+            logger.warning(f"Project not found for update: {project_id}")
+            return None
+        except InvalidId:
+            logger.error(f"Invalid ObjectId format for update: {project_id}")
+            raise
+        except Exception as e:
+            logger.error(f"Error updating project {project_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # --- NEW METHOD ---
+    @classmethod
+    async def soft_delete_project(cls, project_id: str) -> Optional[Dict[str, Any]]:
+        """Soft delete a project by setting its status to 'deleted'."""
+        try:
+            if cls.db is None:
+                raise HTTPException(status_code=500, detail="Database connection not initialized")
+
+            obj_id = ObjectId(project_id)
+
+            # Set status to "deleted" and update timestamp
+            delete_update = {
+                "status": "deleted",
+                "updated_at": datetime.utcnow()
+            }
+
+            deleted_project = await cls.db.projects.find_one_and_update(
+                {"_id": obj_id},
+                {"$set": delete_update},
+                return_document=ReturnDocument.AFTER
+            )
+
+            if deleted_project:
+                logger.info(f"Successfully soft-deleted project: {project_id}")
+                return cls._serialize_project(deleted_project)
+            
+            logger.warning(f"Project not found for soft delete: {project_id}")
+            return None
+        except InvalidId:
+            logger.error(f"Invalid ObjectId format for delete: {project_id}")
+            raise
+        except Exception as e:
+            logger.error(f"Error soft-deleting project {project_id}: {e}")
+            raise HTTPException(status_code=500, detail=str(e))

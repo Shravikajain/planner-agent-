@@ -79,20 +79,8 @@ class ProjectResponse(BaseModel):
     updated_at: datetime
 
     class Config:
-        allow_population_by_field_name = True
-        json_encoders = {ObjectId: str}
-
-class ProjectDetails(BaseModel):
-    title: str
-    description: Optional[str] = None
-    project_type: str = Field(default="web_development")
-    start_date: datetime
-    end_date: datetime
-    technologies: List[str]
-    difficulty_level: str = Field(default="beginner")
-    sprints: List[Dict[str, Any]] = Field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+       validate_by_name = True  # <-- RENAMED
+       json_encoders = {ObjectId: str}
 
 class Milestone(BaseModel):
     name: str
@@ -112,8 +100,19 @@ class SubTask(BaseModel):
 class RefinedTask(Task):
     subtasks: List[SubTask]
 
-class ProjectPlan(BaseModel):
-    project_summary: str = Field(..., description="A clear summary of the project")
-    key_features_deliverables: List[str] = Field(..., description="List of main features or deliverables")
-    major_milestones: List[Dict[str, str]] = Field(..., description="List of major milestones with timelines")
-    high_level_tasks: List[Dict[str, Any]] = Field(..., description="List of major tasks to be completed")
+class ProjectUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    deadline: Optional[datetime] = None
+    tags: Optional[List[str]] = None
+    document: Optional[str] = None
+    status: Optional[str] = None
+    tasks: Optional[List[str]] = None
+    progress: Optional[float] = None
+    team: Optional[List[TeamMember]] = None
+    sprints: Optional[List[Sprint]] = None
+    timeline: Optional[List[TimelineEvent]] = None
+    resources: Optional[List[Resource]] = None
+    class Config:
+        # Allow extra fields to be ignored
+        extra = "ignore"

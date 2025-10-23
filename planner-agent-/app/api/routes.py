@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from typing import Dict, Any, List
 from core.planner import PlannerAgent
 from core.mongodb import MongoDB
-from api.models import ProjectDetails, ProjectPlan , ProjectCreate
+from api.models import   ProjectCreate , ProjectUpdate
 import os
 import logging
 from bson import ObjectId
@@ -34,6 +34,11 @@ async def create_project(project: ProjectCreate) -> Dict[str, Any]:
 async def get_project_description(project_id: str) -> Dict[str, Any]:
     """Get the description of a specific project by its ID."""
     try:
+        # --- FIX: Check if the database is connected ---
+        if MongoDB.db is None:
+            logger.error("MongoDB connection not initialized")
+            raise HTTPException(status_code=500, detail="Database connection not initialized")
+        
         # Convert string ID to MongoDB ObjectId
         try:
             obj_id = ObjectId(project_id)
@@ -62,16 +67,15 @@ async def get_project_description(project_id: str) -> Dict[str, Any]:
     except Exception as e:
         logger.error(f"Error retrieving project description: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @router.get("/projects", response_model=List[Dict[str, Any]])
 async def list_projects():
     """List all projects from the database."""
     try:
         logger.info("Attempting to fetch projects from database")
-        if not MongoDB.db:
+        if  MongoDB.db is None :
             logger.error("MongoDB connection not initialized")
             raise HTTPException(status_code=500, detail="Database connection not initialized")
-
         # Fetch all projects from MongoDB
         projects = []
         logger.info("Starting database query...")
@@ -118,6 +122,9 @@ async def generate_plan_for_existing_project(
 ) -> Dict[str, Any]:
     """Generate a project plan for an existing project in the database."""
     try:
+        if MongoDB.db is None:
+            logger.error("MongoDB connection not initialized")
+            raise HTTPException(status_code=500, detail="Database connection not initialized")
         # Convert string ID to MongoDB ObjectId
         try:
             obj_id = ObjectId(project_id)
@@ -199,8 +206,20 @@ async def refine_project_tasks(
     try:
         logger.info(f"Looking up project plan with ID: {project_id}")
         
+        # --- FIX: Check if the database is connected ---
+        if MongoDB.db is None:
+            logger.error("MongoDB connection not initialized")
+            raise HTTPException(status_code=500, detail="Database connection not initialized")
+        
+        # --- FIX: Validate ObjectId format ---
+        try:
+            obj_id = ObjectId(project_id)
+        except InvalidId:
+            logger.error(f"Invalid ObjectId format: {project_id}")
+            raise HTTPException(status_code=400, detail="Invalid project ID format")
+
         # First check if the project exists
-        project = await MongoDB.db.projects.find_one({"_id": ObjectId(project_id)})
+        project = await MongoDB.db.projects.find_one({"_id": obj_id})
         if not project:
             raise HTTPException(
                 status_code=404,
@@ -234,6 +253,65 @@ async def refine_project_tasks(
         return refined_plan
 
     except HTTPException:
+        # Re-raise HTTPException directly
         raise
     except Exception as e:
+        # Log the unexpected error before raising
+        logger.error(f"Unexpected error refining tasks for project {project_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/projects/{project_id}", response_model=Dict[str, Any])
+async def update_project_details(
+    project_id: str,
+    update: ProjectUpdate
+) -> Dict[str, Any]:
+    """Update details of an existing project."""
+    try:
+        # Get update data, excluding fields that were not set
+        update_data = update.dict(exclude_unset=True)
+
+        if not update_data:
+            raise HTTPException(status_code=400, detail="No update data provided")
+
+        logger.info(f"Updating project {project_id} with data: {update_data.keys()}")
+
+        updated_project = await MongoDB.update_project(project_id, update_data)
+
+        if not updated_project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        return updated_project
+
+    except InvalidId:
+        logger.error(f"Invalid ObjectId format: {project_id}")
+        raise HTTPException(status_code=400, detail="Invalid project ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating project {project_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/projects/{project_id}", response_model=Dict[str, Any])
+async def delete_project(project_id: str) -> Dict[str, Any]:
+    """Soft delete a project by setting its status to 'deleted'."""
+    try:
+        logger.info(f"Attempting to soft delete project: {project_id}")
+
+        deleted_project = await MongoDB.soft_delete_project(project_id)
+
+        if not deleted_project:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        logger.info(f"Successfully soft-deleted project: {project_id}")
+        return deleted_project
+
+    except InvalidId:
+        logger.error(f"Invalid ObjectId format: {project_id}")
+        raise HTTPException(status_code=400, detail="Invalid project ID format")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error soft-deleting project {project_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
